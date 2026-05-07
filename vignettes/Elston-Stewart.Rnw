@@ -1,0 +1,266 @@
+%\VignetteIndexEntry{Elston-Stewart package}
+%\VignetteDepends{ElstonStewart}
+%\VignettePackage{ElstonStewart}
+
+\documentclass{article}
+\usepackage[noae]{Sweave}
+\usepackage[top=35mm, bottom=40mm, left=25mm , right=25mm]{geometry}
+\usepackage{moreverb}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+
+\setkeys{Gin}{width=0.4\textwidth}
+\SweaveOpts{echo=TRUE, eps=FALSE, pdf=TRUE}
+
+\raggedbottom
+\pagestyle{empty}
+\parindent0pt
+\parskip8pt
+\def\thesection{\arabic{section}}
+\def\theequation{\arabic{equation}}
+
+<<echo=FALSE>>=
+options(continue=" ", prompt = " ", SweaveHooks=list(fig=function() par(mar=c(5.1,4.1,3.1,2.1))), width=90)
+@
+
+<<prompton, echo=FALSE>>=
+options(prompt="> ", continue = "+ ");
+@
+
+<<promptoff, echo=FALSE>>=
+options(prompt=" ", continue=" ");
+@
+
+<<echo=FALSE>>=
+<<prompton>>
+@
+
+<<desc, include=FALSE, echo=FALSE>>=
+require(ElstonStewart)
+options(width = 90)
+desc <- packageDescription("ElstonStewart")
+@
+
+\title{ElstonStewart package vignette \\
+        Version \Sexpr{desc$Version}}
+\author{Hervé Perdry}
+
+\begin{document}
+\maketitle
+
+\section{Introduction}
+
+The Elston-Stewart algorithm allows to compute probability functions in pedigrees. 
+
+Consider individuals indexed by $i = 1, 2, \dots$, with genotype $G_i$ 
+and phenotype $X_i$. The set of possible genotypes for individual $i$ is
+$g_i$ and the phenotype is $x_i$. The algorithm allows to compute probabilities
+of the form
+\[ P_\theta\left( \bigcap_i (G_i \in g_i, X_i = x_i ) \right). \]
+
+It needs the specification of a \textit{model}, consisting in 
+\begin{enumerate}
+\item genotype probabilities for founder $P_\theta(G = g)$
+\item genotype transition probabilities from
+parents to offspring
+\[ P_\theta(G_{\text{of}} = g_{\text{of}} | G_{\text{fa}} = g_{\text{fa}}, G_{\text{mo}} = g_{\text{mo}}) \]
+\item phenotype probabilities, conditional to genotype $P_\theta(X = x|G = g)$.
+\end{enumerate}
+
+This package implements Elston-Stewart algorithm, including for pedigrees with imbreding, 
+allowing the user to specify the model of her choice. It uses memoization (aka known as dynamic programming),
+allows vectorization, and, when various pedigrees are considered at the same
+time, allows parallel computing.
+
+\section{An example model}
+
+The functions {\tt Elston} and {\tt Likelihood} have a parameter {\tt model}, 
+which is a list specifying the model. Its composnents are 
+\begin{itemize}
+\item {\tt name}: the model name, used in the memoization: 
+if you use different models, be sure to give them different names
+\item {\tt proba.g}: a function giving genotypes probabilities
+\item {\tt trans}: a function giving transition probabilities from parent to offspring   
+\item {\tt p.pheno}: a function giving phenotype probabilities, conditional to genotype
+\end{itemize}
+
+The package provides an example model, {\tt model.di} which can be a template for
+other models. It's a model for a di-allelic loci, the genotypes being coded
+additively (0, 1, 2 according to the number of the alternate allele). Let's examine the
+model components. 
+
+{\tt modele.di\$proba.g} gives Hardy-Weinberg probabilities, using {\tt theta\$p }
+which is the reference allele frequency:
+<<>>=
+modele.di$proba.g
+@
+
+{\tt modele.di\$trans} gives transition probabilities, according to Mendel's rules:
+<<>>=
+modele.di$trans
+@
+
+In this model, the phenotype will be ignored. More general functions can use any component of
+{\tt theta}:
+<<>>=
+modele.di$p.pheno
+@
+
+\section{Example: probabilities for an imbred pedigree}
+
+This is the pedigree of Conrad II, Holy Roman Emperor. The names on this pedigree
+appear in french.
+\begin{center}
+\includegraphics[width=0.4\textwidth]{conrad.pdf}
+\end{center}
+Conrad has an imbreding coefficient $f = 1/64$. For example, his probability 
+to have a recessive disease due to a mutation with frequency $q = 0.02$ is 
+$(1-f)q^2 + fq = 0.00070625$, to be compared with $q^2 = 0,0004$ for non-imbred 
+individuals.
+
+The data set {\tt conrad2} provides the pedigree structure.
+<<>>=
+data(conrad2)
+conrad2
+@
+
+\subsection{A computation with {\tt modele.di}}
+Creation of an {\tt es.pedigree} object with genotype = 2 for Conrad,
+and 0, 1 or 2 for all other members of the family.
+<<>>=
+genotypes <- c( rep(list(0:2), 21), 2 )
+
+X <- es.pedigree( id = conrad2$id, father = conrad2$father, mother = conrad2$mother, 
+      sex = conrad2$sex, pheno = rep(0, 22), geno = genotypes )
+X
+@
+
+We can plot it.
+\begin{center}
+<<fig=TRUE>>=
+plot(X)
+@
+\end{center}
+
+And we can compute the probability of this pedigree
+<<>>=
+r <- Elston(X, modele.di, list(p = 0.98))
+r$result
+@
+
+The second component of {\tt r} is an environment, containing
+intermediate results of the computation. Providing it to Elston as parameter {\tt mem} will speed up 
+subsequent computations, even with a different parameter $p$.
+<<>>=
+# using the memoization...
+system.time(r <- Elston(X, modele.di, list(p = 0.98)))
+system.time(r <- Elston(X, modele.di, list(p = 0.98), r$mem))
+system.time(r <- Elston(X, modele.di, list(p = 0.99), r$mem))
+@
+
+\subsection{A computation with a model for recessive diseases}
+
+We create a model for recessive traits: 
+<<>>=
+modele.rec <- list( name = "recessive", proba.g = modele.di$proba.g, 
+   trans = modele.di$trans,
+   p.pheno = function(x, g, theta) 
+       ifelse( is.na(x) | (x == 1 & g == 2) | (x == 0 & g < 2) , 1, 0) 
+   )
+@
+
+Setting all genotypes to unknown, we can compute the probability for Conrad II to have the recessive phenotype: 
+<<>>=
+genotypes <- rep(list(0:2), 22)
+X <- es.pedigree( id = conrad2$id, father = conrad2$father, mother = conrad2$mother, 
+      sex = conrad2$sex, pheno = c( rep(NA, 21), 1), geno = genotypes )
+
+r <- Elston(X, modele.rec, list(p = 0.98), r$mem)
+r$result
+@
+
+An other interesting result is the probability of disease for Conrad II, knowing
+that no other individuals in the pedigree is diseased:
+<<>>=
+X <- es.pedigree( id = conrad2$id, father = conrad2$father, mother = conrad2$mother,
+      sex = conrad2$sex, pheno = c( rep(0, 21), 1), geno = genotypes )
+
+r <- Elston(X, modele.rec, list(p = 0.98), r$mem)
+r$result
+@
+
+This could have been computed with {\tt model.di} too, setting the possible
+genotypes to the appropriate values:
+<<>>=
+genotypes <- c( rep(list(0:1), 21), 2 )
+X <- es.pedigree( id = conrad2$id, father = conrad2$father, mother = conrad2$mother,
+      sex = conrad2$sex, pheno = rep(0, 22), geno = genotypes )
+r <- Elston(X, modele.di, list(p = 0.98), r$mem)
+r$result
+@
+
+\section{Example: likelihood maximization for a set of pedigrees}
+
+The data frame {\tt fams} contains 50 pedigrees. The genotypes for a di-allelic locus are known only for a subset of individuals.
+
+<<>>=
+data(fams)
+head(fams,15)
+@
+
+We will estimate the allele frequencies in this locus by likelihood maximization.
+We start by creating a list of {\tt es.pedigree} objects.
+<<>>=
+fam.ids <- unique(fams$fam);
+
+# creating a list of genotypes corresponding to individuals in fam.ids
+# genotype is NA -> 0, 1 or 2
+genotypes <- lapply( fams$genotype, function(x) if(is.na(x)) 0:2 else x )
+
+X <- vector("list", length(fam.ids))
+for(i in seq_along(fam.ids))
+{
+  w <- which(fams$fam == fam.ids[i])
+  X[[i]] <- es.pedigree( id = fams$id[w], father = fams$father[w],
+      mother = fams$mother[w], sex = fams$sex[w], pheno = rep(0, length(w)), 
+      geno = genotypes[w], famid = fam.ids[i] )
+}
+@
+
+When we use the function {\tt Likelihood}, we don't have to take care of memoization anymore.
+<<>>=
+# computing the log-likelihood for a single value p
+Likelihood(X, modele.di, theta = list( p=0.5), n.cores=1 )
+@
+
+Vectorization is possible! With the code below, the algorithm is ran only once
+to compute the 501 log-likelihoods.
+\begin{center}
+<<fig=TRUE, height=4>>=
+# computing the likelihood for a vector p
+p <- seq(0,1,length=501)
+L <- Likelihood(X, modele.di, theta = list( p=p ), n.cores=1 ) 
+plot( p, exp(L), type="l")
+@
+\end{center}
+
+We can run an optimization algorithm. Here Elston-Stewart is ran several times, on a computation 
+cluster of 2 nodes. The cluster is created at first run, and left open for the next computations.
+<<>>=
+# running an optimization algorithm
+# Elston-Stewart is ran several times
+# here we run the algorithm with 2 cores
+optimize( function(p) -Likelihood(X, modele.di, theta = list( p=p ), n.cores=2 ) , c(0.35,0.45) )
+@
+
+If you don't need it any more, close the cluster... (you will lose the memoization, which 
+is specific to each cluster node).
+<<>>=
+es.stopCluster()
+@
+
+\end{document}
+
+
+
+
